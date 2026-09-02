@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import re
 import zipfile
 from pathlib import Path
 from typing import Dict, Iterable, List, Sequence
@@ -63,7 +64,8 @@ def _read_xlsx_rows(file_path: str) -> List[List[str]]:
                         rel_ns = {"a": "http://schemas.openxmlformats.org/package/2006/relationships"}
                         for rel in rels_root.findall("a:Relationship", rel_ns):
                             if rel.attrib.get("Id") == rel_id:
-                                sheet_path = "xl/" + rel.attrib.get("Target", "")
+                                target = rel.attrib.get("Target", "").lstrip("/")
+                                sheet_path = target if target.startswith("xl/") else "xl/" + target
                                 break
                     if sheet_path is None:
                         sheet_path = "xl/worksheets/sheet1.xml"
@@ -78,6 +80,15 @@ def _read_xlsx_rows(file_path: str) -> List[List[str]]:
         for row in sheet_root.findall(".//a:sheetData/a:row", ns):
             values: List[str] = []
             for cell in row.findall("a:c", ns):
+                reference = cell.attrib.get("r", "")
+                column_match = re.match(r"[A-Za-z]+", reference)
+                if column_match:
+                    column_letters = column_match.group().upper()
+                    column_index = 0
+                    for letter in column_letters:
+                        column_index = column_index * 26 + ord(letter) - ord("A") + 1
+                    while len(values) < column_index - 1:
+                        values.append("")
                 cell_type = cell.attrib.get("t")
                 value = ""
                 if cell_type == "inlineStr":
@@ -98,6 +109,69 @@ def _read_xlsx_rows(file_path: str) -> List[List[str]]:
             if values:
                 rows.append(values)
     return rows
+
+
+def load_class_subject_hours(file_path: str) -> Dict[str, Dict[str, int]]:
+    """Load class lesson allocations from the wide XLSX timetable export."""
+    if Path(file_path).suffix.lower() != ".xlsx":
+        raise ValueError("Faqat XLSX fayllarni yuklash mumkin.")
+
+    rows = _read_xlsx_rows(file_path)
+    header_index = next(
+        (
+            index
+            for index, row in enumerate(rows)
+            if any("o'qituvchi" in cell.lower() or "teacher" in cell.lower() for cell in row)
+            and any("fan" in cell.lower() or "subject" in cell.lower() for cell in row)
+        ),
+        None,
+    )
+    if header_index is None:
+        raise ValueError("XLSX faylda O'qituvchi va Fan ustunlari topilmadi.")
+
+    header = rows[header_index]
+    teacher_index = next(
+        index for index, cell in enumerate(header) if "o'qituvchi" in cell.lower() or "teacher" in cell.lower()
+    )
+    subject_index = next(
+        index for index, cell in enumerate(header) if "fan" in cell.lower() or "subject" in cell.lower()
+    )
+    class_indexes = {
+        cell.strip(): index
+        for index, cell in enumerate(header)
+        if index > subject_index + 1 and cell.strip() and cell.strip().lower() not in {"xona", "room"}
+    }
+    if not class_indexes:
+        raise ValueError("XLSX faylda sinflar ustunlari topilmadi.")
+
+    totals: Dict[str, Dict[str, float]] = {class_name: {} for class_name in class_indexes}
+    for row in rows[header_index + 1 :]:
+        if len(row) <= max(teacher_index, subject_index):
+            continue
+        teacher = row[teacher_index].strip()
+        subject = row[subject_index].strip()
+        if not teacher or not subject:
+            continue
+        for class_name, column_index in class_indexes.items():
+            if column_index >= len(row):
+                continue
+            hours = _coerce_numeric_hours(row[column_index])
+            if hours is not None and hours > 0:
+                label = f"{subject}\n{teacher}"
+                totals[class_name][label] = totals[class_name].get(label, 0.0) + hours
+
+    result: Dict[str, Dict[str, int]] = {
+        class_name: {
+            label: int(round(hours))
+            for label, hours in values.items()
+            if int(round(hours)) > 0
+        }
+        for class_name, values in totals.items()
+        if values
+    }
+    if not result:
+        raise ValueError("XLSX faylda sinflar uchun darslar topilmadi.")
+    return result
 
 
 def _coerce_numeric_hours(value: str) -> float | None:

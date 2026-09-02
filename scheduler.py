@@ -33,7 +33,7 @@ class ScheduleGenerator:
         else:
             self.config = config or ScheduleConfig()
 
-        if sum(self.subjects.values()) > self.config.capacity:
+        if config is None and sum(self.subjects.values()) > self.config.capacity:
             extra_days = max(1, math.ceil(sum(self.subjects.values()) / self.config.max_hours_per_day))
             self.config = ScheduleConfig(
                 days=tuple(f"Kun {idx}" for idx in range(1, extra_days + 1)),
@@ -56,6 +56,7 @@ class ScheduleGenerator:
         exclude_signatures: Optional[Set[str]] = None,
         max_attempts: int = 400,
         random_seed: Optional[int] = None,
+        blocked_teacher_slots: Optional[Set[Tuple[str, int, int]]] = None,
     ) -> List[List[Optional[str]]]:
         excludes = exclude_signatures or set()
         rng = random.Random(random_seed)
@@ -71,7 +72,7 @@ class ScheduleGenerator:
             for subject in priority_subjects:
                 pair_count = self.subjects[subject] // 2
                 for _ in range(pair_count):
-                    placed = self._place_priority_pair(schedule, day_load, subject, rng)
+                    placed = self._place_priority_pair(schedule, day_load, subject, rng, blocked_teacher_slots)
                     if not placed:
                         break
                 remaining_hours[subject] = self.subjects[subject] - self._count_subject(schedule, subject)
@@ -85,7 +86,7 @@ class ScheduleGenerator:
 
             ok = True
             for subject in single_slots:
-                if not self._place_single(schedule, day_load, subject, rng):
+                if not self._place_single(schedule, day_load, subject, rng, blocked_teacher_slots):
                     ok = False
                     break
             if not ok:
@@ -103,6 +104,7 @@ class ScheduleGenerator:
         day_load: List[int],
         subject: str,
         rng: random.Random,
+        blocked_teacher_slots: Optional[Set[Tuple[str, int, int]]] = None,
     ) -> bool:
         day_indexes = list(range(len(self.config.days)))
         rng.shuffle(day_indexes)
@@ -110,7 +112,19 @@ class ScheduleGenerator:
         candidates: List[Tuple[float, int, int]] = []
         for day_idx in day_indexes:
             for hour_idx in range(self.config.max_hours_per_day - 1):
-                if schedule[day_idx][hour_idx] is None and schedule[day_idx][hour_idx + 1] is None:
+                teacher = subject.rsplit("\n", 1)[-1]
+                slots_available = (
+                    not blocked_teacher_slots
+                    or (
+                        (teacher, day_idx, hour_idx) not in blocked_teacher_slots
+                        and (teacher, day_idx, hour_idx + 1) not in blocked_teacher_slots
+                    )
+                )
+                if (
+                    schedule[day_idx][hour_idx] is None
+                    and schedule[day_idx][hour_idx + 1] is None
+                    and slots_available
+                ):
                     score = hour_idx * 10 + day_load[day_idx] * 2 + rng.random()
                     candidates.append((score, day_idx, hour_idx))
 
@@ -129,13 +143,18 @@ class ScheduleGenerator:
         day_load: List[int],
         subject: str,
         rng: random.Random,
+        blocked_teacher_slots: Optional[Set[Tuple[str, int, int]]] = None,
     ) -> bool:
         priority = self.is_priority_subject(subject)
         candidates: List[Tuple[float, int, int]] = []
 
         for day_idx in range(len(self.config.days)):
             for hour_idx in range(self.config.max_hours_per_day):
-                if schedule[day_idx][hour_idx] is None:
+                teacher = subject.rsplit("\n", 1)[-1]
+                if schedule[day_idx][hour_idx] is None and (
+                    not blocked_teacher_slots
+                    or (teacher, day_idx, hour_idx) not in blocked_teacher_slots
+                ):
                     if priority:
                         score = hour_idx * 8 + day_load[day_idx] * 2 + rng.random()
                     else:
@@ -166,3 +185,44 @@ class ScheduleGenerator:
                 row.append(schedule[day_idx][hour_idx] or "")
             rows.append(row)
         return rows
+
+
+def generate_class_schedules(
+    class_subjects: Dict[str, Dict[str, int]],
+    config: Optional[ScheduleConfig] = None,
+    exclude_signatures: Optional[Set[str]] = None,
+    max_attempts: int = 400,
+) -> Dict[str, List[List[Optional[str]]]]:
+    """Generate class schedules while preventing a teacher's parallel lessons."""
+    schedule_config = config or ScheduleConfig()
+    rng = random.Random()
+    excludes = exclude_signatures or set()
+
+    for _ in range(max_attempts):
+        schedules: Dict[str, List[List[Optional[str]]]] = {}
+        occupied_teachers: Set[Tuple[str, int, int]] = set()
+        ordered_classes = sorted(class_subjects.items(), key=lambda item: sum(item[1].values()), reverse=True)
+        for class_name, subjects in ordered_classes:
+            generator = ScheduleGenerator(subjects, config=schedule_config)
+            schedule = generator.generate(
+                random_seed=rng.randrange(1_000_000_000),
+                blocked_teacher_slots=occupied_teachers,
+            )
+            schedules[class_name] = schedule
+            for day_index, day in enumerate(schedule):
+                for period_index, lesson in enumerate(day):
+                    if lesson:
+                        teacher = lesson.rsplit("\n", 1)[-1]
+                        occupied_teachers.add((teacher, day_index, period_index))
+
+        signature = "|".join(
+            f"{class_name}:{ScheduleGenerator.schedule_signature(schedule)}"
+            for class_name, schedule in sorted(schedules.items())
+        )
+        if signature not in excludes:
+            return schedules
+
+    raise ValueError(
+        "O'qituvchilar to'qnashuvsiz yangi jadval topilmadi. "
+        "O'qituvchilarning jami dars soatlarini tekshiring."
+    )
