@@ -43,26 +43,31 @@ class ScheduleApp(tk.Tk):
 
         columns = ("soat", *DAYS)
         self.table = ttk.Treeview(self, columns=columns, show="headings", height=10)
-        self.table.heading("soat", text="Soat")
-        self.table.column("soat", width=70, anchor="center")
-        for day in DAYS:
-            self.table.heading(day, text=day)
-            self.table.column(day, width=170, anchor="center")
+        self._configure_table_columns(DAYS)
         self.table.pack(fill="both", expand=True, padx=10, pady=10)
 
         self.status_label = ttk.Label(self, text="CSV faylni yuklang va jadval yarating.")
         self.status_label.pack(anchor="w", padx=10, pady=(0, 10))
 
+    def _configure_table_columns(self, days: Sequence[str]) -> None:
+        self.table.configure(columns=("soat", *days))
+        self.table.heading("soat", text="Soat")
+        self.table.column("soat", width=70, anchor="center")
+        for day in days:
+            self.table.heading(day, text=day)
+            self.table.column(day, width=170, anchor="center")
+
     def load_csv(self) -> None:
         file_path = filedialog.askopenfilename(
-            title="CSV faylni tanlang",
-            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+            title="CSV/Excel faylni tanlang",
+            filetypes=[("CSV files", "*.csv"), ("Excel files", "*.xlsx"), ("All files", "*.*")],
         )
         if not file_path:
             return
         try:
             self.subjects = load_subject_hours(file_path)
             self.generator = ScheduleGenerator(self.subjects)
+            self._configure_table_columns(self.generator.config.days)
         except Exception as exc:
             messagebox.showerror("Xatolik", str(exc))
             return

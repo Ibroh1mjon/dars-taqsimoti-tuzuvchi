@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import random
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
@@ -22,7 +23,23 @@ class ScheduleConfig:
 class ScheduleGenerator:
     def __init__(self, subjects: Dict[str, int], config: Optional[ScheduleConfig] = None):
         self.subjects = {name.strip(): int(hours) for name, hours in subjects.items() if name.strip() and int(hours) > 0}
-        self.config = config or ScheduleConfig()
+        if not self.subjects:
+            raise ValueError("Hech qanday fanlar topilmadi.")
+
+        total_hours = sum(self.subjects.values())
+        if config is None and total_hours > ScheduleConfig().capacity:
+            required_days = max(1, math.ceil(total_hours / ScheduleConfig().max_hours_per_day))
+            self.config = ScheduleConfig(days=tuple(f"Kun {idx}" for idx in range(1, required_days + 1)))
+        else:
+            self.config = config or ScheduleConfig()
+
+        if sum(self.subjects.values()) > self.config.capacity:
+            extra_days = max(1, math.ceil(sum(self.subjects.values()) / self.config.max_hours_per_day))
+            self.config = ScheduleConfig(
+                days=tuple(f"Kun {idx}" for idx in range(1, extra_days + 1)),
+                max_hours_per_day=self.config.max_hours_per_day,
+            )
+
         self._validate_capacity()
 
     def _validate_capacity(self) -> None:
